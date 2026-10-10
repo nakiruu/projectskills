@@ -504,3 +504,33 @@ Rows: ~1000s total. Writer: Rust (execution). Update: event-driven. Partitioned:
 | `order_id_close` | `utf8` | yes | FK to orders |
 
 Primary key: `lot_id`.
+
+## 24. `trade_summary.parquet`
+
+Rows: ~500/year. Writer: Julia (ledger). Update: event-driven (on close). Partitioned: `year`.
+
+| Column | Type | Nullable | Notes |
+|---|---|---|---|
+| `trade_id` | `utf8` | no | Primary key |
+| `ticker` | `utf8` | no | |
+| `entry_date` | `date32` | no | Earliest open date |
+| `exit_date` | `date32` | no | Latest close date |
+| `entry_price` | `float64` | no | Weighted-average |
+| `exit_price` | `float64` | no | Weighted-average |
+| `quantity` | `float64` | no | Fractional permitted |
+| `gross_return_bps` | `float64` | no | |
+| `slippage_bps` | `float64` | no | Quantity-weighted |
+| `net_return_bps` | `float64` | no | |
+| `benchmark_return_bps` | `float64` | no | Equal-weighted universe |
+| `alpha_bps` | `float64` | no | |
+| `holding_days` | `int32` | no | Trading days |
+| `return_per_day_bps` | `float64` | no | |
+| `downside_deviation_bps` | `float64` | yes | Null if no down days |
+| `trade_sortino` | `float64` | yes | Null if downside deviation is 0 |
+| `regime_at_entry` | `utf8` | no | |
+| `regime_at_exit` | `utf8` | no | |
+| `conviction_at_entry` | `float64` | no | |
+| `tier_at_entry` | `utf8` | no | |
+| `lock_overridden` | `bool` | no | True on veto-forced exit |
+
+Primary key: `trade_id`.
