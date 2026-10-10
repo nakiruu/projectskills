@@ -457,3 +457,50 @@ Event types: `order_submitted`, `order_filled`, `order_cancelled`,
 `lock_transition`, `lock_violation_blocked`, `veto_triggered`,
 `regime_flip`, `position_reconciled`, `manual_override`,
 `kill_switch_activated`.
+
+## 22. `portfolio_ledger.parquet`
+
+Rows: ~252/year. Writer: Julia (ledger). Update: daily. Partitioned: `year`.
+
+| Column | Type | Nullable | Notes |
+|---|---|---|---|
+| `date` | `date32` | no | Primary key |
+| `cash` | `float64` | no | USD |
+| `cash_pct` | `float64` | no | |
+| `market_value` | `float64` | no | |
+| `total_value` | `float64` | no | `cash + market_value` |
+| `cost_basis` | `float64` | no | |
+| `unrealized_pnl` | `float64` | no | |
+| `realized_pnl_today` | `float64` | no | |
+| `realized_pnl_ytd` | `float64` | no | |
+| `n_positions` | `int32` | no | |
+| `daily_return` | `float64` | no | vs prior day |
+| `cumulative_return` | `float64` | no | since inception |
+| `max_drawdown` | `float64` | no | trailing 252d |
+| `sortino_252d` | `float64` | no | trailing 252d |
+| `regime_factor` | `float64` | no | |
+| `reconciled` | `bool` | no | |
+| `backfilled` | `bool` | no | false for live rows |
+
+Primary key: `date`.
+
+## 23. `tax_lots.parquet`
+
+Rows: ~1000s total. Writer: Rust (execution). Update: event-driven. Partitioned: no.
+
+| Column | Type | Nullable | Notes |
+|---|---|---|---|
+| `lot_id` | `utf8` | no | Primary key |
+| `ticker` | `utf8` | no | |
+| `open_date` | `date32` | no | |
+| `open_price` | `float64` | no | |
+| `open_quantity` | `int64` | no | Reduced on partial close |
+| `close_date` | `date32` | yes | Null if open |
+| `close_price` | `float64` | yes | |
+| `close_quantity` | `int64` | no | 0 if open |
+| `realized_pnl` | `float64` | yes | Null if open |
+| `holding_days` | `int32` | no | Calendar days |
+| `order_id_open` | `utf8` | no | FK to orders |
+| `order_id_close` | `utf8` | yes | FK to orders |
+
+Primary key: `lot_id`.

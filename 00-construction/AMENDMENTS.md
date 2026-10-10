@@ -5,6 +5,7 @@ Append-only. Every change to SKILL.md adds a row. Never edit a past row.
 | Version | Date       | Invariant | Change                          | Rationale                          | PR  |
 |---------|------------|-----------|---------------------------------|------------------------------------|-----|
 | 1.0     | 2026-10-10 | all       | Initial ratification            | Project inception                  | #1  |
+| 1.1 | 2026-10-10 | §5, §8 | Permit in-place update of `tax_lots.parquet` on full close; permit reduction of `open_quantity` on partial close with a new row for the closed portion | FIFO lot tracking requires mutating the open lot when partially closed. This is the only sanctioned update path for a non-audit file. `audit_log.parquet` remains strictly append-only. `portfolio_ledger.parquet` is append-only for new days. | #NN |
 
 ## Amendment Template
 
