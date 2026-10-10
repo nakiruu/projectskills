@@ -89,7 +89,7 @@ backtest.
 See `scripts/run-backtest.jl`. The backtest:
 
 1. Loads the full panel with `split` column.
-2. Uses `DataSplits.PurgedKFold` or equivalent for CPCV folds [citation:19].
+2. Uses `DataSplits.PurgedKFold` or equivalent for CPCV folds.
 3. For each fold, trains GSPQR on the training portion.
 4. Applies TCP calibration on the training portion (rolling).
 5. Applies EVT on calibrated residuals.
@@ -103,6 +103,66 @@ See `scripts/run-backtest.jl`. The backtest:
 **inside** each fold. They cannot be pre-computed on the full dataset,
 because the lock state at any date depends on prior decisions within
 that path.
+
+### 6a. Tier-Aware Execution Simulator
+
+The backtest's execution simulator reads the execution tier from the
+simulated NAV at each step. The tier is not a fixed parameter of the
+backtest; it evolves with the simulated account.
+
+The simulator implements the same three tiers as the live order
+generator (see `10-execution-schwab/SKILL.md` §2a):
+
+| Tier | Simulated NAV | Execution model |
+|---|---|---|
+| Bootstrap | < $2,500 | Fractional market order, fill at ask (buy) or bid (sell) |
+| Transition | $2,500 – $10,000 | Whole-share limit at mid, fractional market for remainder |
+| Standard | > $10,000 | Whole-share limit at mid |
+
+The fill price for a limit order in the simulator is the mid-price. This
+is optimistic; live limit orders may not fill at mid. The backtest
+understates the cost of limit orders and overstates the Sharpe ratio in
+the Standard tier by a small amount. This is documented as a known
+limitation, not a bug.
+
+The fill price for a market order in the simulator is the ask for buys
+and the bid for sells. The spread is sourced from the historical bid/ask
+if available, or modeled as a fixed 5 bps spread if the historical
+bid/ask is missing.
+
+The transition between tiers is checked at each rebalance, not at each
+order. A NAV that crosses $2,500 mid-rebalance is treated as the
+pre-crossing tier until the next rebalance. This prevents a single
+day's move from flipping the execution model within a single decision.
+
+### 6b. Starting NAV
+
+The backtest requires a starting NAV. Two configurations are supported:
+
+| Configuration | Starting NAV | Purpose |
+|---|---|---|
+| Bootstrap-realistic | $1,000 | Reproduces the live account's starting conditions |
+| Standard-research | $100,000 | Evaluates the strategy at the scale it was designed for |
+
+Both configurations are run. The Bootstrap-realistic backtest shows what
+the system would have done with the actual account. The Standard-research
+backtest shows what the strategy does when the tier constraint is removed.
+
+The two backtests are reported separately. A strategy that works at
+$100,000 but not at $1,000 is not the same strategy. The Bootstrap tier
+exists because the account is small, not because the strategy is different.
+
+### 6c. Fractional Quantity in the Backtest
+
+The backtest's simulated positions are stored as `float64` quantities,
+not integers. This is required for the Bootstrap and Transition tiers.
+The metrics are unaffected; a position of 0.30 shares contributes 0.30 ×
+price to market value, same as any other quantity.
+
+The ledger in the backtest is simulated using the same
+`portfolio_ledger.parquet` schema as the live system. The `n_positions`
+column counts nonzero fractional positions. A 0.05-share position counts
+as a position.
 
 ## 7. The Deflated Sharpe Ratio
 

@@ -25,6 +25,12 @@ one row per day. Tax lots grow by one row per buy and are updated in
 place on partial sells (a new row for the closed portion, the original
 row updated for the remaining open portion).
 
+**Fractional quantities.** In the Bootstrap and Transition tiers (see
+`00-constitution` §6a), positions and fills are fractional. The ledger
+stores all quantities and prices as `float64`. The `cash` column reflects
+the full cost of market-order spreads. The `daily_return` column
+therefore includes spread costs in tiers where market orders are used.
+
 **Amendment to the constitution:** The "append-only" rule of §5 applies
 to `audit_log.parquet` specifically. The ledger is append-only for new
 days; tax lots use a documented update pattern for partial closes. See
@@ -75,11 +81,19 @@ until the sold quantity is consumed. Each closed portion produces a
 | `fills.parquet` | Executions | Ledger's tax lots come from fills |
 | `audit_log.parquet` | Event log | Ledger is the state; audit is the events |
 | `evaluation_metrics.parquet` | Model metrics | Ledger holds portfolio metrics |
+| `shadow_fills.parquet` | Simulated fills | Ledger reflects real fills, not simulated |
 
 **Cross-check:** Every ledger row's position count and cash balance must
 match the same-day `positions.parquet` and the Schwab statement. If they
 disagree, trading halts. The reconciliation job (see
 `10-execution-schwab/scripts/reconcile-positions.jl`) does this check.
+
+**Spread cost note.** In the Bootstrap and Transition tiers, market
+orders pay the full spread. The `daily_return` column reflects this
+cost. A bootstrap-tier account's returns are systematically lower than a
+standard-tier account's returns by the average spread per trade. This is
+expected. The backtest protocol (`14-backtest-protocol` §6a) models the
+same cost structure, so live and simulated results are comparable.
 
 ## 6. Query Patterns
 
@@ -124,6 +138,8 @@ WHERE close_date >= DATE_TRUNC('year', current_date)
   position returns. It is `total_value_t / total_value_{t-1} − 1`.
 - Do not write the ledger on non-trading days. There is no row for
   weekends or holidays.
+- Do not store fractional quantities as integers. The schema uses
+  `float64` for a reason.
 
 ## 8. Verification
 
@@ -133,6 +149,9 @@ WHERE close_date >= DATE_TRUNC('year', current_date)
 - [ ] A test asserts realized P&L matches sum of closed lots
 - [ ] A test asserts `daily_return` uses prior day's total_value
 - [ ] A test asserts ledger total_value matches positions + cash
+- [ ] A test asserts fractional quantities are stored as `float64`
+- [ ] A test asserts the `cash` column includes market-order spread cost
+      in the Bootstrap and Transition tiers
 
 ## 9. Related Skills
 

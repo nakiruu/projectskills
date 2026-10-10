@@ -102,14 +102,43 @@ If you need a different shape, write a new file. Do not mutate the old one.
 
 ## 6. Execution Constraints
 
-- **Limit orders only.** Never submit a market order to Schwab. Not even for
-  liquid names. Not even for small sizes.
+- **NAV-tiered order execution.** See §6a. The execution tier is determined
+  by the trailing 5-day mean NAV.
 - **No shorts.** Long-only. The universe is ETFs of growth equities.
 - **Cash buffer.** At least 2% of portfolio value remains in cash at all times.
 - **Position cap.** No single name exceeds 5% of portfolio value.
 - **Sector cap.** No GICS sector exceeds 25% of portfolio value.
 - **Reconciliation.** Every day at market close, local positions are compared
   against Schwab's reported positions. Mismatch halts trading.
+
+## 6a. NAV-Tiered Order Execution
+
+Three tiers, checked at every order submission:
+
+| Tier | Trailing 5-day mean NAV | Order policy |
+|---|---|---|
+| **Bootstrap** | < $2,500 | Fractional market orders only. Limit orders are not submitted. |
+| **Transition** | $2,500 – $10,000 | Limit orders are the default. Market orders permitted only for fractional share quantities that cannot be expressed as whole-share limits. |
+| **Standard** | > $10,000 | Limit orders only. Market orders are not submitted. |
+
+Rules:
+- The tier is checked at order submission time, not cached. A NAV crossing
+  a tier boundary takes effect on the next order.
+- The tier boundary is inclusive at the lower bound. NAV of exactly $2,500
+  is Transition. NAV of exactly $10,000 is Standard.
+- Schwab rounds limit orders up to whole shares. Fractional quantities are
+  only expressible as market orders.
+- In the Transition tier, the order generator produces a whole-share limit
+  for the integer portion and a fractional market for the remainder.
+- In the Standard tier, quantities are rounded to whole shares and the
+  residual is returned to cash.
+- The 5-day lock applies in all tiers. A fractional market order is still
+  a buy or sell that triggers or resets the lock.
+- The order-type enum in Rust contains both `Limit` and `Market` variants.
+  The `Market` variant is only constructible inside the Bootstrap tier or
+  the Transition tier's fractional path.
+
+See skill `10-execution-schwab` §2a for the implementation.
 
 ## 7. Veto vs. Conviction
 
@@ -146,6 +175,12 @@ writes a row. The row contains `event_id`, `timestamp`, `event_type`,
 
 If the audit log is unwritable, halt trading. Do not proceed without it.
 
+`portfolio_ledger.parquet` is append-only for new trading days. The
+idempotency overwrite on a re-run of the same day is a defensive measure,
+not a normal update path. `tax_lots.parquet` permits in-place update on
+full close and reduction of `open_quantity` on partial close, as
+documented in skill `16-portfolio-ledger`.
+
 ## 9. Model Output Contracts
 
 The prediction pipeline produces three outputs per ticker per horizon.
@@ -172,13 +207,16 @@ Before committing any change, confirm:
 
 - [ ] No new code uses `period_end` as a decision variable
 - [ ] No new code creates a random train/test split on time series
-- [ ] No new code submits a market order
+- [ ] No new code submits a market order outside the Bootstrap tier or
+      the Transition tier's fractional path
 - [ ] No new code violates the lock state machine
 - [ ] No new code changes a Parquet schema without a migration
 - [ ] No new code mixes veto and conviction logic
 - [ ] No new code uses valuation as a conviction component
 - [ ] Any new language-boundary crossing is documented in the relevant skill
 - [ ] The audit log is written for every order and state change
+- [ ] The execution tier is read from `portfolio_ledger.parquet` at
+      submission time, not cached
 - [ ] The change is committed with a message that references this file if it
       touches any invariant
 

@@ -17,7 +17,7 @@ Modern Portfolio Theory (MPT) defines risk as the variance of returns.
 This penalizes upside volatility equally with downside losses. Research
 in behavioral finance (Kahneman and Tversky 1979) demonstrates that
 investors are loss-averse: the psychological disutility of a loss is
-roughly twice the utility of an equivalent gain .
+roughly twice the utility of an equivalent gain.
 
 Post-Modern Portfolio Theory (PMPT) replaces variance with **downside
 deviation** (Lower Partial Moment). It measures risk only from returns
@@ -33,9 +33,9 @@ Empirical results from a 2025 study on US equities (2008–2024):
 | CAGR (skewed assets) | — | 11.48% |
 
 The PMPT portfolio reduced maximum drawdown by approximately 16
-percentage points compared to MPT in the large-cap universe . A
+percentage points compared to MPT in the large-cap universe. A
 separate simulation-based study found PMPT achieved a higher Sortino
-ratio (1.60) and lower maximum drawdown (0.14) than MPT .
+ratio (1.60) and lower maximum drawdown (0.14) than MPT.
 
 ## 2. Inputs
 
@@ -59,8 +59,8 @@ Minimize portfolio downside deviation subject to:
 - **Cash buffer:** `Σ w_i ≤ 0.98` (2% minimum cash)
 
 The objective is the Sortino ratio maximization, formulated as a
-Second-Order Cone Program (SOCP) for guaranteed global optimality
-. See `PMPT-FORMULATION.md` for the exact formulation.
+Second-Order Cone Program (SOCP) for guaranteed global optimality.
+See `PMPT-FORMULATION.md` for the exact formulation.
 
 ## 4. Application Order
 
@@ -102,7 +102,7 @@ until convergence (typically 2–3 passes).
 
 ## 6. Constraint Implementation
 
-Using `PortfolioOptimisers.jl` with JuMP and Clarabel :
+Using `PortfolioOptimisers.jl` with JuMP and Clarabel:
 
 ```julia
 using PortfolioOptimisers, Clarabel
@@ -126,8 +126,49 @@ slv = Solver(; name = :clarabel, solver = Clarabel.Optimizer)
 ```
 
 The `PortfolioOptimisers.jl` package supports weight bounds, linear
-group constraints, and sector bands as `JuMPOptimiser` keywords
-.
+group constraints, and sector bands as `JuMPOptimiser` keywords.
+
+### 6a. Fractional-Share Constraint
+
+The optimizer produces **weights**, not share quantities. The conversion
+from weights to quantities happens in the Rust order generator, not here.
+The optimizer is unaware of the execution tier.
+
+The order generator handles the three tiers as follows:
+
+| Tier | Conversion |
+|---|---|
+| Bootstrap | `quantity = weight × NAV / price`, fractional, submitted as a market order |
+| Transition | `whole = floor(weight × NAV / price)`, submitted as a limit; `remainder = weight × NAV / price - whole`, submitted as a market order if `remainder > 0` |
+| Standard | `quantity = round(weight × NAV / price)`, rounded to whole shares, submitted as a limit; residual to cash |
+
+The optimizer's weights are the same in all three tiers. The tier affects
+only the order generator's rounding. A weight of 0.03 for a $200 stock
+with $2,000 NAV produces:
+
+- Bootstrap: 0.30 shares, market order
+- Transition: 0 whole shares, 0.30 fractional market order
+- Standard: 0 whole shares, no order, residual to cash
+
+The Standard tier cannot hold this position at this NAV. This is
+expected. The 5% cap means a $2,000 account can hold at most 0.50 shares
+of a $200 stock, which is below the whole-share minimum. Small NAV
+accounts are structurally constrained to whole-share positions, which is
+why the Bootstrap and Transition tiers exist.
+
+### 6b. Interaction With the Cash Buffer
+
+The 2% cash buffer is enforced at the weight level, before quantity
+conversion. The optimizer produces weights summing to at most 0.98. The
+order generator converts these to quantities and rounds. The rounding
+residual (from whole-share rounding) returns to cash, so the actual cash
+after execution is at least the buffer.
+
+In the Bootstrap and Transition tiers, fractional quantities mean the
+rounding residual is small. The cash buffer is approximately the target.
+In the Standard tier, whole-share rounding can leave several percent in
+cash for small positions. This is acceptable; the buffer is a minimum,
+not a target.
 
 ## 7. What Not to Do
 
@@ -141,6 +182,10 @@ group constraints, and sector bands as `JuMPOptimiser` keywords
 - Do not allow the optimizer to produce weights above 5% for any name.
   The cap is a hard constraint.
 - Do not ignore sector caps. 25% per GICS sector is a hard constraint.
+- Do not convert weights to share quantities in Julia. The conversion
+  happens in the Rust order generator, which knows the execution tier.
+- Do not assume whole-share quantities in the Bootstrap or Transition
+  tiers. Positions are fractional.
 
 ## 8. Verification
 
@@ -151,6 +196,7 @@ group constraints, and sector bands as `JuMPOptimiser` keywords
 - [ ] A test asserts vetoed stocks receive weight 0.0
 - [ ] A test asserts conviction is applied after optimization
 - [ ] A test asserts the SOCP solver converges (no fallback to heuristic)
+- [ ] A test asserts the optimizer output is weights, not quantities
 
 ## 9. Related Skills
 
@@ -158,313 +204,5 @@ group constraints, and sector bands as `JuMPOptimiser` keywords
 - `06-regime-detection` — provides `regime_factor`
 - `07-fundamental-overlay` — provides veto and conviction
 - `09-lock-state-machine` — gates execution after optimization
-- `00-constitution` §6 — position, sector, cash constraints
-```
-
----
-
-## `PMPT-FORMULATION.md`
-
-```markdown
-# PMPT Formulation
-
-The Post-Modern Portfolio Theory optimization problem, formulated as a
-Second-Order Cone Program (SOCP).
-
-## 1. The Objective
-
-Maximize the Sortino ratio:
-
-    Sortino = (E[R_p] − R_target) / σ_downside
-
-Where:
-- `E[R_p]` = expected portfolio return (from GSPQR `q_50`)
-- `R_target` = minimum acceptable return (MAR), typically the risk-free rate
-- `σ_downside` = downside deviation (lower semi-deviation)
-
-## 2. Downside Deviation
-
-The downside deviation is the square root of the lower partial moment:
-
-    σ_downside = sqrt( (1/T) × Σ_t max(0, R_target − R_{p,t})² )
-
-Where `R_{p,t}` is the portfolio return at time `t`.
-
-Unlike variance, which penalizes all deviations from the mean, the
-downside deviation penalizes only returns below the target. This is the
-key difference between MPT and PMPT .
-
-## 3. SOCP Formulation
-
-The Sortino maximization can be reformulated as a linear objective with
-a second-order cone constraint :
-
-    min  t
-    s.t. Σ_i w_i × μ_i − R_target ≥ 0
-         ||d||_2 ≤ t
-         d_t ≥ max(0, R_target − Σ_i w_i × r_{i,t})  for all t
-         Σ_i w_i ≤ 0.98
-         0 ≤ w_i ≤ 0.05
-         Σ_{i ∈ sector s} w_i ≤ 0.25  for all s
-
-Where:
-- `w_i` = weight of asset `i`
-- `μ_i` = expected return of asset `i` (GSPQR `q_50`)
-- `r_{i,t}` = historical return of asset `i` at time `t`
-- `d_t` = downside deviation at time `t`
-- `t` = auxiliary variable (the downside deviation to minimize)
-
-The `||d||_2 ≤ t` constraint is a second-order cone. This is what makes
-the problem a SOCP, solvable to global optimality by Clarabel
-.
-
-## 4. Why SOCP Over Heuristic
-
-Earlier downside-risk literature used heuristic approximations because
-the problem was computationally complex . Modern convex
-optimization solves the Global Minimum Semivariance problem exactly.
-The 2025 study explicitly uses SOCP to "ensure convergence to true
-global minima without heuristic approximation" .
-
-The pipeline uses `PortfolioOptimisers.jl` with Clarabel, which
-supports SOCP constraints natively .
-
-## 5. The Target Return
-
-The minimum acceptable return (MAR) is set to the daily risk-free rate
-(from FRED `DGS3MO`), converted to the rebalance horizon:
-
-    R_target = (1 + DGS3MO/100)^(H/252) − 1
-
-For a monthly rebalance (H = 21), this is approximately the 1-month
-T-bill rate.
-
-## 6. Expected Returns
-
-The expected returns `μ_i` come from the GSPQR `q_50` (median) forecast
-for the rebalance horizon. These are **not** historical mean returns.
-They are forward-looking quantile estimates from the LightGBM model.
-
-Using GSPQR `q_50` rather than historical mean is critical. Historical
-means are notoriously noisy and unstable . The GSPQR
-median is a regularized, feature-conditioned estimate.
-
-## 7. Covariance Matrix
-
-The covariance matrix for the risk model is estimated via Ledoit-Wolf
-shrinkage. See `COVARIANCE.md`. The covariance is used for the
-risk-contribution constraints (sector caps are implemented via
-exposure constraints), not for the objective (which uses downside
-deviation).
-
-## 8. What Not to Do
-
-- Do not use variance as the risk measure. The objective uses downside
-  deviation.
-- Do not use historical mean returns as `μ_i`. Use GSPQR `q_50`.
-- Do not use a heuristic approximation. The SOCP solves to global
-  optimality.
-- Do not set `R_target` to 0. Use the risk-free rate.
-- Do not skip the SOCP formulation and use a QP solver. The downside
-  deviation constraint is not quadratic; it is a cone.
-```
-
----
-
-## `COVARIANCE.md`
-
-```markdown
-# Covariance Estimation
-
-The covariance matrix is used for risk-contribution analysis and sector
-exposure constraints. It is estimated via Ledoit-Wolf shrinkage.
-
-## 1. Why Shrinkage
-
-The sample covariance matrix is a poor estimator when the number of
-assets is large relative to the number of observations. For a
-500-asset universe with 252 days of returns, the sample covariance is
-singular or near-singular .
-
-Ledoit-Wolf shrinkage addresses this by combining the sample covariance
-with a structured target:
-
-    Σ̂ = δ·F̂ + (1 − δ)·Ŝ
-
-Where:
-- `Ŝ` = sample covariance matrix
-- `F̂` = structured target (constant correlation model by default)
-- `δ` = optimal shrinkage intensity (estimated from data)
-
-## 2. The Target Matrix
-
-The default target is the **constant correlation model**: all pairwise
-correlations are set to the average sample correlation, while variances
-are preserved from the sample.
-
-This is the target used in the original Ledoit-Wolf (2003, 2004) papers
-and in the `CovTools` R implementation .
-
-## 3. The Shrinkage Intensity
-
-The optimal `δ` is computed analytically to minimize the expected
-Frobenius norm of the estimation error . The formula
-depends on the concentration ratio `p/n` (assets over observations) and
-the variance of the sample covariance entries.
-
-`PortfolioOptimisers.jl` implements this via its `EmpiricalPrior` with
-shrinkage enabled.
-
-## 4. Estimation Window
-
-The covariance is estimated on a rolling 252-day window (1 year) of
-daily returns.
-
-**Why 252 days:** Research on shrinkage estimators uses rolling windows
-of 1 year as a standard in-sample period . Shorter windows
-are too noisy; longer windows include stale regime information.
-
-## 5. What Not to Do
-
-- Do not use the sample covariance matrix directly. It is ill-conditioned
-  for large universes.
-- Do not use a diagonal covariance matrix (ignoring correlations). This
-  destroys the diversification benefit.
-- Do not estimate on more than 2 years of data. Older data describes a
-  different regime.
-- Do not skip the shrinkage intensity calculation. The optimal δ is not
-  0.5; it is data-dependent.
-```
-
----
-
-## `scripts/optimize-portfolio.jl`
-
-```julia
-#!/usr/bin/env julia
-# Runs the PMPT portfolio optimization and writes portfolio_targets.parquet.
-
-using Pkg
-Pkg.activate(temp=true)
-Pkg.add(["Parquet2", "DataFrames", "Dates", "Statistics",
-         "PortfolioOptimisers", "Clarabel"])
-
-using Parquet2
-using DataFrames
-using Dates
-using Statistics
-using PortfolioOptimisers
-using Clarabel
-
-# ---- Configuration ----
-const PREDICTIONS_PATH = get(ENV, "PREDICTIONS_PATH", "/mnt/cache/quant/lake/gspqr_predictions.parquet")
-const TCP_PATH = get(ENV, "TCP_PATH", "/mnt/cache/quant/lake/tcp_calibration.parquet")
-const VETO_PATH = get(ENV, "VETO_PATH", "/mnt/cache/quant/lake/veto_flags.parquet")
-const CONVICTION_PATH = get(ENV, "CONVICTION_PATH", "/mnt/cache/quant/lake/conviction_scores.parquet")
-const REGIME_PATH = get(ENV, "REGIME_PATH", "/mnt/cache/quant/lake/regime_states.parquet")
-const PRICES_PATH = get(ENV, "PRICES_PATH", "/mnt/cache/quant/lake/prices.parquet")
-const OUTPUT_PATH = get(ENV, "OUTPUT_PATH", "/mnt/cache/quant/lake/portfolio_targets.parquet")
-
-const MAX_WEIGHT = 0.05
-const MAX_SECTOR = 0.25
-const CASH_BUFFER = 0.02
-
-# ---- Main ----
-function main()
-    rebalance_date = length(ARGS) >= 2 && ARGS[1] == "--date" ?
-                     Date(ARGS[2]) : today()
-
-    @info "Optimizing portfolio for $rebalance_date"
-
-    # Load inputs
-    preds = DataFrame(Parquet2.read(PREDICTIONS_PATH))
-    tcp = DataFrame(Parquet2.read(TCP_PATH))
-    veto = DataFrame(Parquet2.read(VETO_PATH))
-    conviction = DataFrame(Parquet2.read(CONVICTION_PATH))
-    regime = DataFrame(Parquet2.read(REGIME_PATH))
-    prices = DataFrame(Parquet2.read(PRICES_PATH))
-
-    # Filter to latest date
-    preds = filter(r -> r.date == rebalance_date, preds)
-    tcp = filter(r -> r.forecast_date == rebalance_date, tcp)
-    veto = filter(r -> r.as_of_date == rebalance_date && !r.veto_active, veto)
-    conviction = filter(r -> r.as_of_date == rebalance_date, conviction)
-    regime = filter(r -> r.date == rebalance_date, regime)
-
-    # Regime factor
-    regime_factor = isempty(regime) ? 1.0 : regime.regime_factor[1]
-    if regime_factor == 0.0
-        @warn "Crisis regime. No new positions."
-        return
-    end
-
-    # Eligible universe (not vetoed)
-    eligible = innerjoin(preds, veto, on = :ticker, makeunique = true)
-
-    # Expected returns (GSPQR q_50, 63d horizon)
-    eligible = filter(r -> r.horizon == "63d", eligible)
-
-    # Merge conviction
-    eligible = leftjoin(eligible, conviction, on = :ticker)
-
-    # Build returns matrix for covariance
-    # (in practice: pivot prices to wide format)
-    # ...
-
-    # Weights (simplified: equal weight for now, real implementation uses JuMP)
-    n = nrow(eligible)
-    if n == 0
-        @warn "No eligible stocks"
-        return
-    end
-
-    w_optimized = fill((1.0 - CASH_BUFFER) / n, n)
-
-    # Apply conviction
-    conviction_vals = coalesce.(eligible.conviction, 1.0)
-    w_conviction = w_optimized .* conviction_vals
-    w_final = w_conviction ./ sum(w_conviction) .* (1.0 - CASH_BUFFER)
-
-    # Build output
-    out = DataFrame(
-        rebalance_date = fill(rebalance_date, n),
-        ticker = eligible.ticker,
-        expected_return = eligible.q_50,
-        downside_risk = eligible.q_05,
-        w_optimized = w_optimized,
-        conviction = conviction_vals,
-        w_conviction = w_conviction,
-        w_final = w_final,
-        veto_active = fill(false, n),
-        cap_applied = fill(false, n),
-    )
-
-    Parquet2.write(OUTPUT_PATH, out)
-    @info "Wrote $(nrow(out)) targets to $OUTPUT_PATH"
-end
-
-main()
-```
-
----
-
-## Directory Status
-
-`08-portfolio-optimization/` is complete:
-
-| File | Purpose |
-|---|---|
-| `SKILL.md` | Overview, PMPT rationale, application order, constraints |
-| `PMPT-FORMULATION.md` | SOCP formulation, downside deviation, expected returns |
-| `COVARIANCE.md` | Ledoit-Wolf shrinkage, target matrix, estimation window |
-| `scripts/optimize-portfolio.jl` | Working optimization skeleton |
-
-**Key design decisions:**
-
-1. **PMPT over MPT.** The 2025 study found PMPT reduced maximum drawdown by ~16 percentage points versus MPT in large-cap US equities . A separate simulation study found PMPT achieved a Sortino ratio of 1.60 versus MPT's Sharpe of 1.25, with lower max drawdown .
-
-2. **SOCP formulation.** The downside deviation constraint is a second-order cone. Solving as SOCP guarantees global optimality, unlike heuristic approximations . `PortfolioOptimisers.jl` supports SOCP natively via Clarabel .
-
-3. **Ledoit-Wolf shrinkage for covariance.** The sample covariance matrix is ill-conditioned for large universes. Shrinkage toward a constant-correlation target improves out-of-sample performance and reduces turnover .
-
-4. **Conviction after optimization.** The optimizer enforces the 5% cap and 25% sector cap on unscaled weights. Conviction then scales. If conviction were applied first, a high-conviction stock could push past the cap after renormalization.
+- `10-execution-schwab` — the order generator that converts weights to quantities
+- `00-constitution` §6, §6a — position, sector, cash constraints and NAV tiers
